@@ -1,0 +1,114 @@
+name: Automated Code Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: Review greeting.py
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out Pull Request code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Submit automated review
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+            const path = "greeting.py";
+
+            if (!fs.existsSync(path)) {
+              core.setFailed("greeting.py was not found.");
+              return;
+            }
+
+            const content = fs.readFileSync(path, "utf8");
+
+            const hasTypeHints =
+              content.includes("def create_greeting(name: str) -> str:");
+
+            const hasDocstring =
+              content.includes('"""Return a friendly greeting');
+
+            const hasMainGuard =
+              content.includes('if __name__ == "__main__":');
+
+            const correctionsCompleted =
+              hasTypeHints && hasDocstring && hasMainGuard;
+
+            if (correctionsCompleted) {
+              await github.rest.pulls.createReview({
+                owner,
+                repo,
+                pull_number,
+                event: "APPROVE",
+                body:
+                  "The requested type hints, documentation, and main guard " +
+                  "have been added correctly. Approved."
+              });
+
+              core.info("Pull Request approved.");
+              return;
+            }
+
+            const lines = content.split("\n");
+
+            const functionLineIndex = lines.findIndex(
+              line => line.startsWith("def create_greeting")
+            );
+
+            const printLineIndex = lines.findIndex(
+              line => line.startsWith("print(")
+            );
+
+            const comments = [];
+
+            if (functionLineIndex >= 0) {
+              comments.push({
+                path,
+                line: functionLineIndex + 1,
+                side: "RIGHT",
+                body:
+                  "Please add type hints and a concise docstring so the " +
+                  "function contract is clear."
+              });
+            }
+
+            if (printLineIndex >= 0) {
+              comments.push({
+                path,
+                line: printLineIndex + 1,
+                side: "RIGHT",
+                body:
+                  "Please move executable code under an " +
+                  "`if __name__ == \"__main__\":` guard."
+              });
+            }
+
+            await github.rest.pulls.createReview({
+              owner,
+              repo,
+              pull_number,
+              event: "REQUEST_CHANGES",
+              body:
+                "Please address the two code-review comments before merging.",
+              comments
+            });
+
+            core.info("Changes requested.");
